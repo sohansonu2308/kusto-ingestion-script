@@ -1,0 +1,6 @@
+azure-kusto-data
+azure-kusto-ingest
+pandas
+python-dotenv
+schedule
+psutil
