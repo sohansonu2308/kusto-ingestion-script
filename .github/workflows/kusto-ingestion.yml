@@ -1,0 +1,146 @@
+name: Kusto Batch Ingestion with Anomaly Detection
+
+on:
+  schedule:
+    # Run every 15 minutes for better reliability
+    # Script will check if it's time to ingest (every 30 min)
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    # Allow manual trigger for testing
+
+env:
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  kusto-ingestion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Prevent hanging workflows
+    
+    steps:
+    - name: 🚀 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📊 Log batch information
+      run: |
+        echo "🔍 Workflow started at: $(date -u)"
+        echo "🔢 Expected batch calculation..."
+        python3 -c "
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        epoch = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        total_minutes = int((now - epoch).total_seconds() / 60)
+        batch_number = (total_minutes // 30) + 1
+        is_anomaly = (batch_number % 6 == 0)
+        print(f'📅 Current time: {now.strftime(\"%Y-%m-%d %H:%M:%S\")} UTC')
+        print(f'🔢 Batch number: #{batch_number}')
+        print(f'🚨 Is anomaly batch: {\"YES\" if is_anomaly else \"NO\"}')
+        "
+      
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: 📦 Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: 🔐 Create environment file
+      run: |
+        echo "CLUSTER_URL=${{ secrets.CLUSTER_URL }}" >> .env
+        echo "DATABASE_NAME=${{ secrets.DATABASE_NAME }}" >> .env
+        echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> .env
+        echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env
+        echo "TENANT_ID=${{ secrets.TENANT_ID }}" >> .env
+        
+    - name: 🧪 Test connection
+      run: |
+        python -c "
+        import os
+        from dotenv import load_dotenv
+        from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+        
+        load_dotenv()
+        
+        print('🔐 Testing Kusto connection...')
+        client_id = os.getenv('CLIENT_ID')
+        client_secret = os.getenv('CLIENT_SECRET')
+        tenant_id = os.getenv('TENANT_ID')
+        cluster_url = os.getenv('CLUSTER_URL')
+        
+        kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
+            cluster_url, client_id, client_secret, tenant_id
+        )
+        
+        client = KustoClient(kcsb)
+        print('✅ Connection test successful!')
+        "
+        
+    - name: 📊 Run Batch Ingestion
+      run: |
+        echo "🔄 Starting batch ingestion at $(date)"
+        
+        # Retry logic - try up to 3 times
+        for attempt in 1 2 3; do
+          echo "🎯 Attempt $attempt of 3..."
+          
+          if python batch_ingestion_multi_table.py; then
+            echo "✅ Batch ingestion completed successfully at $(date)"
+            exit 0
+          else
+            echo "❌ Attempt $attempt failed"
+            if [ $attempt -eq 3 ]; then
+              echo "💥 All attempts failed - ingestion unsuccessful"
+              exit 1
+            else
+              echo "⏳ Waiting 30 seconds before retry..."
+              sleep 30
+            fi
+          fi
+        done
+        
+    - name: 📈 Generate run summary
+      if: always()
+      run: |
+        # Calculate batch info for summary
+        BATCH_INFO=$(python3 -c "
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        epoch = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        total_minutes = int((now - epoch).total_seconds() / 60)
+        batch_number = (total_minutes // 30) + 1
+        is_anomaly = (batch_number % 6 == 0)
+        next_anomaly = ((batch_number // 6) + 1) * 6
+        print(f'{batch_number}|{\"ANOMALY\" if is_anomaly else \"NORMAL\"}|{next_anomaly}')
+        ")
+        
+        IFS='|' read -r BATCH_NUM BATCH_TYPE NEXT_ANOMALY <<< "$BATCH_INFO"
+        
+        echo "## 📊 Ingestion Run Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Time**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Batch Number**: #$BATCH_NUM ($BATCH_TYPE)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tables**: HttpIncoming, HttpOutgoing, SLL" >> $GITHUB_STEP_SUMMARY
+        echo "- **Expected Records**: 5,400 (1,800 per table)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Duration**: 30 minutes of timestamped data" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎯 **Next scheduled run**: Every 30 minutes" >> $GITHUB_STEP_SUMMARY
+        echo "🚨 **Next anomaly batch**: #$NEXT_ANOMALY" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "💡 **Anomaly Pattern**: Every 6th batch contains anomalous data" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ **Status**: Successful" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Status**: Failed - Check logs for details" >> $GITHUB_STEP_SUMMARY
+        fi
