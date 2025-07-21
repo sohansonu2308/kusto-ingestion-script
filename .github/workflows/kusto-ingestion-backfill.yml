@@ -1,4 +1,4 @@
-name: Kusto Batch Ingestion with Anomaly Detection
+name: Kusto Batch Ingestion with Anomaly Detection (Backfill Method)
 
 on:
   schedule:
