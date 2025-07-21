@@ -1,0 +1,89 @@
+name: Kusto Batch Ingestion with Anomaly Detection
+
+on:
+  schedule:
+    # Run every 30 minutes (at :00 and :30 of every hour)
+    - cron: '0,30 * * * *'
+  workflow_dispatch:
+    # Allow manual trigger for testing
+
+env:
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  kusto-ingestion:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🚀 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: 📦 Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: 🔐 Create environment file
+      run: |
+        echo "CLUSTER_URL=${{ secrets.CLUSTER_URL }}" >> .env
+        echo "DATABASE_NAME=${{ secrets.DATABASE_NAME }}" >> .env
+        echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> .env
+        echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env
+        echo "TENANT_ID=${{ secrets.TENANT_ID }}" >> .env
+        
+    - name: 🧪 Test connection
+      run: |
+        python -c "
+        import os
+        from dotenv import load_dotenv
+        from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+        
+        load_dotenv()
+        
+        print('🔐 Testing Kusto connection...')
+        client_id = os.getenv('CLIENT_ID')
+        client_secret = os.getenv('CLIENT_SECRET')
+        tenant_id = os.getenv('TENANT_ID')
+        cluster_url = os.getenv('CLUSTER_URL')
+        
+        kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
+            cluster_url, client_id, client_secret, tenant_id
+        )
+        
+        client = KustoClient(kcsb)
+        print('✅ Connection test successful!')
+        "
+        
+    - name: 📊 Run Batch Ingestion
+      run: |
+        echo "🔄 Starting batch ingestion at $(date)"
+        python batch_ingestion_multi_table.py
+        echo "✅ Batch ingestion completed at $(date)"
+        
+    - name: 📈 Generate run summary
+      if: always()
+      run: |
+        echo "## 📊 Ingestion Run Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Time**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tables**: HttpIncoming, HttpOutgoing, SLL" >> $GITHUB_STEP_SUMMARY
+        echo "- **Expected Records**: 5,400 (1,800 per table)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Duration**: 30 minutes of timestamped data" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎯 **Next scheduled run**: Every 30 minutes" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "💡 **Anomaly Pattern**: Every 6th batch contains anomalous data" >> $GITHUB_STEP_SUMMARY
