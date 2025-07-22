@@ -4,7 +4,8 @@ Batch Ingestion Script for Multi-Table Kusto Data
 This script generates 30 minutes of timestamped data for 3 tables and ingests them in batches.
 Perfect for scheduled runs every 30 minutes to create a live-looking dashboard.
 
-Mode: Forward-looking - generates data for the next 30 minutes (now to now + 30 minutes)
+Mode: Continuous Forward-looking - generates data in sequential 30-minute windows
+ensuring no gaps even if workflow runs are delayed
 """
 
 import os
@@ -50,9 +51,9 @@ class BatchIngestorMultiTable:
         
         if self.is_anomaly_batch:
             print(f"🚨 ANOMALY BATCH: This batch will contain unusual patterns!")
-            print(f"⚡ Method: Forward-looking with ANOMALOUS data patterns")
+            print(f"⚡ Method: Continuous forward-looking with ANOMALOUS data patterns")
         else:
-            print(f"⚡ Method: Forward-looking with realistic timestamps")
+            print(f"⚡ Method: Continuous forward-looking with realistic timestamps")
         print("-" * 70)
         
         # Calculate time range for this batch
@@ -79,15 +80,25 @@ class BatchIngestorMultiTable:
         return batch_number
     
     def _calculate_time_range(self):
-        """Calculate the time range for this batch - generates data for the next 30 minutes"""
-        # Forward-looking: start time is now, end time is 30 minutes from now
+        """Calculate the time range for this batch - generates continuous forward-looking data"""
         now = datetime.now(timezone.utc)
         
-        # Start time is current time
-        self.batch_start_time = now
+        # Calculate what the "expected" start time should be based on batch number
+        # This ensures continuity even if GitHub Actions runs are slightly delayed
+        epoch = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        expected_start = epoch + timedelta(minutes=(self.batch_number - 1) * 30)
         
-        # End time is 30 minutes from now
-        self.batch_end_time = now + timedelta(minutes=self.batch_duration_minutes)
+        # Use the expected start time to ensure continuity
+        # If we're running late, we still generate the "correct" time window
+        self.batch_start_time = expected_start
+        self.batch_end_time = expected_start + timedelta(minutes=self.batch_duration_minutes)
+        
+        # If the calculated start time is too far in the past (more than 2 hours),
+        # fall back to current time to avoid generating very old data
+        if (now - self.batch_start_time).total_seconds() > 7200:  # 2 hours
+            print("⚠️  Batch start time is too far in past, using current time")
+            self.batch_start_time = now
+            self.batch_end_time = now + timedelta(minutes=self.batch_duration_minutes)
         
         # Calculate total seconds and records per table
         self.total_seconds = self.batch_duration_minutes * 60
@@ -99,6 +110,13 @@ class BatchIngestorMultiTable:
         print(f"   Duration: {self.batch_duration_minutes} minutes ({self.total_seconds} seconds)")
         print(f"   Records per table: {self.records_per_table}")
         print(f"   Total records: {self.records_per_table * len(self.tables)}")
+        
+        # Show timing info
+        now = datetime.now(timezone.utc)
+        if self.batch_start_time <= now:
+            print(f"   📍 Status: Generating data for past/current time window")
+        else:
+            print(f"   🔮 Status: Generating data for future time window")
         print()
     
     def _setup_data_ranges(self):
@@ -524,7 +542,7 @@ class BatchIngestorMultiTable:
 def main():
     """Main function"""
     print("🎯 BATCH MULTI-TABLE KUSTO INGESTION")
-    print("Forward-looking mode: 30 minutes of future timestamped data")
+    print("Continuous mode: Sequential 30-minute windows with no gaps")
     print()
     
     try:
