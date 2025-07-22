@@ -4,7 +4,7 @@ Batch Ingestion Script for Multi-Table Kusto Data
 This script generates 30 minutes of timestamped data for 3 tables and ingests them in batches.
 Perfect for scheduled runs every 30 minutes to create a live-looking dashboard.
 
-Mode: Forward-looking - generates data from current time to 30 minutes in the future
+Mode: Forward-looking - generates data for the next 30 minutes (now to now + 30 minutes)
 """
 
 import os
@@ -78,40 +78,16 @@ class BatchIngestorMultiTable:
         batch_number = (total_minutes // 30) + 1
         return batch_number
     
-    def should_run_ingestion(self):
-        """Check if we should run ingestion based on current time"""
-        now = datetime.now(timezone.utc)
-        
-        # Calculate expected batch start time
-        expected_start = self.get_expected_batch_start_time()
-        
-        # Allow ingestion if we're within 10 minutes of the expected start time
-        time_diff = abs((now - expected_start).total_seconds())
-        should_run = time_diff <= 600  # 10 minutes tolerance
-        
-        print(f"⏰ Current time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        print(f"⏰ Expected batch start: {expected_start.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        print(f"⏰ Time difference: {time_diff:.0f} seconds")
-        print(f"⏰ Should run ingestion: {should_run}")
-        
-        return should_run
-    
-    def get_expected_batch_start_time(self):
-        """Calculate when this batch should have started"""
-        epoch = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        batch_start_minutes = (self.batch_number - 1) * self.batch_duration_minutes
-        return epoch + timedelta(minutes=batch_start_minutes)
-    
     def _calculate_time_range(self):
-        """Calculate the time range for this batch"""
-        # FORWARD-LOOKING MODE: Generate data from current time to 30 minutes in the future
+        """Calculate the time range for this batch - generates data for the next 30 minutes"""
+        # Forward-looking: start time is now, end time is 30 minutes from now
         now = datetime.now(timezone.utc)
         
-        # Start time is current time (rounded to nearest minute for clean timestamps)
-        self.batch_start_time = now.replace(second=0, microsecond=0)
+        # Start time is current time
+        self.batch_start_time = now
         
-        # End time is 30 minutes from current time
-        self.batch_end_time = self.batch_start_time + timedelta(minutes=self.batch_duration_minutes)
+        # End time is 30 minutes from now
+        self.batch_end_time = now + timedelta(minutes=self.batch_duration_minutes)
         
         # Calculate total seconds and records per table
         self.total_seconds = self.batch_duration_minutes * 60
@@ -546,87 +522,19 @@ class BatchIngestorMultiTable:
                 
         return anomaly_count, anomaly_event, anomaly_severity
 def main():
-    """Main function with missing batch detection"""
+    """Main function"""
     print("🎯 BATCH MULTI-TABLE KUSTO INGESTION")
     print("Forward-looking mode: 30 minutes of future timestamped data")
     print()
     
     try:
-        # Create ingestor to check timing
-        current_ingestor = BatchIngestorMultiTable(batch_duration_minutes=30)
-        current_batch = current_ingestor.batch_number
-        
-        # Check if it's time to run ingestion
-        if not current_ingestor.should_run_ingestion():
-            print("⏭️  Not time to run ingestion yet. Skipping this execution.")
-            print(f"📋 Current batch would be: #{current_batch}")
-            return
-        
-        # Check if we need to backfill any missing batches
-        missing_batches = detect_missing_batches(current_batch)
-        
-        if missing_batches:
-            print(f"🚨 DETECTED {len(missing_batches)} MISSING BATCHES: {missing_batches}")
-            print("🔄 Running catchup ingestion for missing batches...")
-            
-            for batch_num in missing_batches:
-                print(f"\n📋 Processing missing batch #{batch_num}...")
-                try:
-                    # Calculate the time range for this missing batch
-                    epoch = datetime(2025, 1, 1, tzinfo=timezone.utc)
-                    batch_start_minutes = (batch_num - 1) * 30
-                    batch_start_time = epoch + timedelta(minutes=batch_start_minutes)
-                    
-                    # Create ingestor for the missing batch with historical timestamp
-                    missing_ingestor = BatchIngestorMultiTable(
-                        batch_duration_minutes=30, 
-                        batch_number=batch_num
-                    )
-                    
-                    # Override the time range to use historical data
-                    missing_ingestor.batch_start_time = batch_start_time
-                    missing_ingestor.batch_end_time = batch_start_time + timedelta(minutes=30)
-                    
-                    # Run ingestion for missing batch
-                    missing_ingestor.run_batch_ingestion()
-                    print(f"✅ Successfully backfilled batch #{batch_num}")
-                    
-                except Exception as e:
-                    print(f"❌ Failed to backfill batch #{batch_num}: {e}")
-                    
-            print(f"\n🎉 Catchup completed! Processed {len(missing_batches)} missing batches")
-            print("="*70)
-        
-        # Now run the current batch
-        print(f"🔄 Running current batch #{current_batch}...")
-        current_ingestor.run_batch_ingestion()
+        # Create and run batch ingestor
+        ingestor = BatchIngestorMultiTable(batch_duration_minutes=30)
+        ingestor.run_batch_ingestion()
         
     except Exception as e:
         print(f"❌ Batch ingestion failed: {e}")
         raise
-
-def detect_missing_batches(current_batch, max_lookback=6):
-    """Detect missing batches by checking which ones should have run recently"""
-    print(f"🔍 Checking for missing batches (looking back {max_lookback} batches)...")
-    
-    # This is a simplified detection - in a real system you'd check 
-    # against actual ingested data timestamps in Kusto
-    expected_batches = list(range(current_batch - max_lookback, current_batch))
-    missing_batches = []
-    
-    # For now, we'll assume if there's a gap of more than 1 in batch numbers
-    # from recent workflow runs, we might have missing batches
-    # This is a basic implementation - you could enhance it by:
-    # 1. Checking actual data timestamps in Kusto
-    # 2. Maintaining a state file of completed batches
-    # 3. Using GitHub API to check workflow run history
-    
-    print(f"📊 Expected recent batches: {expected_batches}")
-    print(f"📊 Current batch: {current_batch}")
-    
-    # For demo purposes, return empty list to avoid complications
-    # In production, you'd implement proper missing batch detection
-    return []
 
 if __name__ == "__main__":
     main()
